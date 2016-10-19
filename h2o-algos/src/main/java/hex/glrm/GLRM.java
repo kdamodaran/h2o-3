@@ -587,7 +587,8 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
                              false, false, false, /* weights */ false, /* offset */ false, /* fold */ false);
         DKV.put(tinfo._key, tinfo);
 
-        double[] deMul = new double[tinfo._nums];   // used to de-normalized dataset after training is done
+        double[] deMul = new double[tinfo._nums];   // multiplier for de-standardization
+        double[] stSub = new double[tinfo._nums];   // offset for standardization
         // Save training frame adaptation information for use in scoring later
         model._output._normSub = tinfo._normSub == null ? new double[tinfo._nums] : tinfo._normSub;
         if (tinfo._normMul == null) {
@@ -597,8 +598,10 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
         } else {
           model._output._normMul = tinfo._normMul;
 
-          for (int index = 0; index < tinfo._nums; index++)
-            deMul[index] = 1.0/tinfo._normMul[index];
+          for (int index = 0; index < tinfo._nums; index++) {
+            deMul[index] = 1.0 / tinfo._normMul[index];
+            stSub[index] = -tinfo._normSub[index]*tinfo._normMul[index];
+          }
         }
         model._output._permutation = tinfo._permutation;
         model._output._nnums = tinfo._nums;
@@ -660,9 +663,9 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
         boolean regX = _parms._regularization_x != GlrmRegularizer.None && _parms._gamma_x != 0;
 
         // perform normalization on matrix A if needed.
-        StandardizeA standardizeA = null;
+        DeOrStandardizeA deOrstandardizeA = null;
         if (_parms._transform != DataInfo.TransformType.NONE) {
-          standardizeA = new StandardizeA(_ncolA, _ncolX, dinfo._cats, model._output._normSub,
+          deOrstandardizeA = new DeOrStandardizeA(_ncolA, _ncolX, dinfo._cats, stSub,
                   model._output._normMul).doAll(dinfo._adaptedFrame);
         }
         curtime = System.currentTimeMillis();
@@ -762,9 +765,8 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
         }
 
         // perform normalization on matrix A if needed.
-        DeStandardizeA deStandardizeA = null;
         if (_parms._transform != DataInfo.TransformType.NONE) {
-          deStandardizeA = new DeStandardizeA(_ncolA, _ncolX, dinfo._cats, model._output._normSub,
+          deOrstandardizeA = new DeOrStandardizeA(_ncolA, _ncolX, dinfo._cats, model._output._normSub,
                   deMul).doAll(dinfo._adaptedFrame);
         }
 
@@ -1457,67 +1459,36 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
     }
   }
 
-  // Perform de-standardization over matrix A for non NA values only
-  private static class DeStandardizeA extends MRTask<DeStandardizeA> {
+  // Perform standardization over matrix A for numeric and non NA values only
+  //  For standardization, you need x = (a-mean)/sigma.  This is equivalent
+  //  to a/sigma-mean/sigma.  Hence, the first term is multiplier = 1/sigma, and the
+  //  second term offset = -mean/sigma.
+  //
+  //  For de-standardization, we do the opposite, a = x*sigma+mean.  In this
+  //  case, set multiplier = sigma, and offset = mean
+  //
+  private static class DeOrStandardizeA extends MRTask<DeOrStandardizeA> {
     // Input
     final int _ncolA;         // Number of cols in training frame
     final int _ncolX;         // Number of cols in X (k)
     final int _ncats;         // Number of categorical cols in training frame
-    final double[] _normSub;  // For standardizing training data
-    final double[] _normMul;
+    final double[] _offsets;  // For standardizing training data
+    final double[] _multipliers;
 
-    DeStandardizeA(int ncolA, int ncolX, int ncats, double[] normSub, double[] normMul) {
+    DeOrStandardizeA(int ncolA, int ncolX, int ncats, double[] offsets, double[] multipliers) {
       assert ncats <= ncolA;
       _ncolA = ncolA;
       _ncolX = ncolX;
       _ncats = ncats;
 
-      _normSub = normSub;
-      _normMul = normMul;
+      _offsets = offsets;
+      _multipliers = multipliers;
     }
 
     @SuppressWarnings("ConstantConditions")  // The method is too complex
     @Override public void map(Chunk[] cs) {
       assert _ncolA <= cs.length;
-      if ((_normSub == null) || (_normMul == null)) // do nothing if subtraction or multiplication vectors are null
-        return;
-
-      for (int row = 0; row < cs[0]._len; row++) {
-        // Standardization is performed on numeric columns
-        for (int j = _ncats; j < _ncolA; j++) {
-          double a = cs[j].atd(row);
-          if (Double.isNaN(a)) continue;   // Skip missing observations in row
-
-          int js = j-_ncats;              // perform de-standization for numerical values
-          cs[j].set(row, (a * _normMul[js] + _normSub[js]));
-        }
-      }
-    }
-  }
-
-  // Perform standardization over matrix A for non NA values only
-  private static class StandardizeA extends MRTask<StandardizeA> {
-    // Input
-    final int _ncolA;         // Number of cols in training frame
-    final int _ncolX;         // Number of cols in X (k)
-    final int _ncats;         // Number of categorical cols in training frame
-    final double[] _normSub;  // For standardizing training data
-    final double[] _normMul;
-
-    StandardizeA(int ncolA, int ncolX, int ncats, double[] normSub, double[] normMul) {
-      assert ncats <= ncolA;
-      _ncolA = ncolA;
-      _ncolX = ncolX;
-      _ncats = ncats;
-
-      _normSub = normSub;
-      _normMul = normMul;
-    }
-
-    @SuppressWarnings("ConstantConditions")  // The method is too complex
-    @Override public void map(Chunk[] cs) {
-      assert _ncolA <= cs.length;
-      if ((_normSub == null) || (_normMul == null)) // do nothing if subtraction or multiplication vectors are null
+      if ((_offsets == null) || (_multipliers == null)) // do nothing if subtraction or multiplication vectors are null
         return;
 
       for (int row = 0; row < cs[0]._len; row++) {
@@ -1527,7 +1498,7 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
           if (Double.isNaN(a)) continue;   // Skip missing observations in row
 
           int js = j-_ncats;              // perform standization for numerical values
-          cs[j].set(row, (a - _normSub[js]) * _normMul[js]);
+          cs[j].set(row, (a * _multipliers[js] + _offsets[js]));
         }
       }
     }
