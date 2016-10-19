@@ -1225,12 +1225,12 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
               //             grad[k] += cweight * weight[c] * ysub[k][c];
               int cidx = _yt.getCatCidx(j, c);
               double weights = cweight * weight[c];
-
+              double[] yArchetypes = _yt._archetypes[cidx];
               for (int k = 0; k < _ncolX; k++) {
 //                double archtypevalues = 0;
 //                double archtypevalues = _yt._archetypes[cidx][k];
 //                tgrad[k] += cweight * weight[c] * archtypevalues;
-                tgrad[k] += weights * _yt._archetypes[cidx][k];
+                tgrad[k] += weights * yArchetypes[k];
               }
             }
           } else {
@@ -1329,11 +1329,12 @@ public class GLRM extends ModelBuilder<GLRMModel, GLRMModel.GLRMParameters, GLRM
       if (yt._transposed) {
         for (int level = 0; level < yt._numLevels[j]; level++) {
           int cidx = yt.getCatCidx(j, level);
+          double[] yArchetypes = yt._archetypes[cidx];
           for (int k = 0; k < _ncolX; k++) {
 //            double archValue = 0.0;
 //            archValue = yt._archetypes[cidx][k];
 //            xy[level] += xnew[k] * archValue;
-            xy[level] += xnew[k] * yt._archetypes[cidx][k];
+            xy[level] += xnew[k] * yArchetypes[k];
           }
         }
       } else {
